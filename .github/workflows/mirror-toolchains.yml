@@ -440,25 +440,25 @@ jobs:
           fi
 
           download_with_aria2() {
-            echo "🌐 Trying aria2c with browser-like headers, limited to 180s..."
+            echo "🌐 Trying aria2c with browser-like headers, limited to 1800s..."
 
-            timeout 180s aria2c \
-              -x1 \
-              -s1 \
+            timeout 1800s aria2c \
+              -x4 \
+              -s4 \
               -k1M \
               -j1 \
               --file-allocation=none \
               --console-log-level=warn \
               --summary-interval=30 \
               --retry-wait=10 \
-              --max-tries=1 \
+              --max-tries=3 \
               --connect-timeout=30 \
-              --timeout=120 \
+              --timeout=300 \
               --lowest-speed-limit=1K \
               --allow-overwrite=true \
               --auto-file-renaming=false \
               --header="User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" \
-              --header="Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              --header="Accept: */*" \
               --header="Accept-Language: en-US,en;q=0.9" \
               --header="Connection: keep-alive" \
               -o "$FILENAME" \
@@ -466,20 +466,20 @@ jobs:
           }
 
           download_with_curl() {
-            echo "🌐 Trying curl fallback, limited to 180s..."
+            echo "🌐 Trying curl fallback, limited to 1800s..."
 
-            timeout 180s curl \
+            timeout 1800s curl \
               -L \
               --fail \
-              --retry 2 \
+              --retry 5 \
               --retry-delay 10 \
               --retry-all-errors \
               --connect-timeout 30 \
-              --max-time 170 \
-              --speed-time 120 \
+              --max-time 1700 \
+              --speed-time 300 \
               --speed-limit 1024 \
               -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" \
-              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              -H "Accept: */*" \
               -H "Accept-Language: en-US,en;q=0.9" \
               -H "Connection: keep-alive" \
               -o "$FILENAME" \
@@ -490,6 +490,7 @@ jobs:
             echo "🧰 Creating archive from git fetch + git archive..."
             echo "Clone URL: $CLONE_URL"
             echo "Revision:  $REV"
+            echo "Provider:  $PROVIDER"
 
             rm -rf mirror-src "$FILENAME"
 
@@ -502,6 +503,7 @@ jobs:
             git config http.lowSpeedLimit 1000
             git config http.lowSpeedTime 600
             git config advice.detachedHead false
+            git config gc.auto 0
 
             echo "🔍 Fetching exact revision..."
 
@@ -526,26 +528,42 @@ jobs:
                 --no-tags \
                 --depth=100 \
                 origin \
-                '+refs/heads/*:refs/remotes/origin/*'
+                '+refs/heads/*:refs/remotes/origin/*' \
+                '+refs/tags/*:refs/tags/*'
 
               if git cat-file -e "${REV}^{commit}" 2>/dev/null; then
                 echo "✅ Revision found after refs fallback."
                 git checkout --force "$REV"
+              elif git rev-parse --verify "origin/${REV}^{commit}" >/dev/null 2>&1; then
+                echo "✅ Revision found as remote branch origin/$REV."
+                git checkout --force "origin/$REV"
               else
                 echo "::error::Revision $REV was not found after fallback fetch."
                 echo "Available remote refs:"
                 git branch -r || true
+                git tag || true
                 exit 1
               fi
             fi
 
-            echo "📦 Creating tar.gz with one top-level folder:"
-            echo "Prefix: ${REPO_LEAF}-${REV}/"
+            echo "📦 Creating tar.gz archive..."
 
-            git archive \
-              --format=tar \
-              --prefix="${REPO_LEAF}-${REV}/" \
-              HEAD | pigz -p "$(nproc)" > "../$FILENAME"
+            if [ "$PROVIDER" = "googlesource" ]; then
+              echo "📦 Googlesource archive mode: no top-level folder prefix."
+              echo "📦 This matches Googlesource +archive extraction behavior."
+
+              git archive \
+                --format=tar \
+                HEAD | pigz -p "$(nproc)" > "../$FILENAME"
+            else
+              echo "📦 Archive mode: with one top-level folder."
+              echo "Prefix: ${REPO_LEAF}-${REV}/"
+
+              git archive \
+                --format=tar \
+                --prefix="${REPO_LEAF}-${REV}/" \
+                HEAD | pigz -p "$(nproc)" > "../$FILENAME"
+            fi
 
             cd ..
 
@@ -556,12 +574,15 @@ jobs:
 
           download_ok=false
 
-          # CodeLinaro/GitLab archive generation is flaky for ALL prebuilts:
-          # clang, build-tools, rust, clang-tools, etc.
-          # It often hangs at 0B/0B or returns 403/timeout.
-          # So for GitLab/CodeLinaro providers, skip HTTP archive entirely.
-          if [ "$PROVIDER" = "gitlab" ]; then
-            echo "🧰 CodeLinaro/GitLab toolchain detected: $TYPE_LABEL"
+          # CodeLinaro/GitLab and Googlesource archive generation can be flaky/slow.
+          # For these providers, use git fetch + git archive directly.
+          #
+          # Important:
+          # - Googlesource archive is generated WITHOUT a top-level folder prefix.
+          # - GitHub/GitLab fallback archive is generated WITH a top-level folder prefix.
+          # This matches the extraction behavior in the build workflow.
+          if [ "$PROVIDER" = "gitlab" ] || [ "$PROVIDER" = "googlesource" ]; then
+            echo "🧰 $PROVIDER toolchain detected: $TYPE_LABEL"
             echo "🧰 Skipping HTTP archive and using git fetch + git archive directly."
             create_archive_from_git
             download_ok=true
@@ -578,7 +599,7 @@ jobs:
                 echo "⚠️ curl archive download also failed."
                 rm -f "$FILENAME"
 
-                if [ "$PROVIDER" = "github" ]; then
+                if [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "googlesource" ]; then
                   create_archive_from_git
                   download_ok=true
                 else
