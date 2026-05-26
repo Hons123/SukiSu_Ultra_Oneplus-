@@ -1365,12 +1365,9 @@ runs:
                 drivers/kernelsu/core/init.c
             fi
 
-            # SukiSU Ultra does not reliably provide this SUSFS-injected init call.
-            # Remove it unconditionally to avoid implicit declaration and orphan symbol errors.
             sed -i '/ksu_lsm_hook_init\s*();/d' drivers/kernelsu/core/init.c
             echo "  - Removed ksu_lsm_hook_init() call from init.c"
 
-            # Remove symbol resolver init if the resolver backend does not exist.
             if ! grep -Rqs '^[[:space:]]*\(void\|int\)[[:space:]]\+ksu_init_symbol_resolver[[:space:]]*(' \
               drivers/kernelsu \
               --include='*.c' 2>/dev/null; then
@@ -1378,13 +1375,11 @@ runs:
               echo "  - Removed orphan ksu_init_symbol_resolver() call"
             fi
 
-            # Normalize possible SUSFS syscall hook names.
             sed -i \
               -e 's/\bksu_syscall_hook_manager_init\s*(/ksu_syscall_hook_init(/g' \
               -e 's/\bksu_syscall_hook_manager_exit\s*(/ksu_syscall_hook_exit(/g' \
               drivers/kernelsu/core/init.c
 
-            # Remove syscall hook calls if no real C implementation exists.
             if ! grep -Rqs '^[[:space:]]*\(void\|int\)[[:space:]]\+ksu_syscall_hook_init[[:space:]]*(' \
               drivers/kernelsu \
               --include='*.c' 2>/dev/null; then
@@ -1399,7 +1394,6 @@ runs:
               echo "  - Removed orphan ksu_syscall_hook_exit() calls"
             fi
 
-            # ksu_late_loaded may not exist in SukiSU Ultra.
             sed -i \
               -e 's/if *(ksu_late_loaded) *{/if (0) {/' \
               -e 's/if *(!ksu_late_loaded)/if (1)/' \
@@ -1416,21 +1410,27 @@ runs:
           fi
 
           # Disable or stub uts_spoof when resolver backend is unavailable.
-          # Do not count uts_spoof.c itself as the backend just because it references find_kernel_symbol_exact().
+          # Important:
+          # - Header prototypes are not enough.
+          # - uts_spoof.c itself must not count as the resolver backend.
+          # - We require a real .c implementation of find_kernel_symbol_exact().
           if [ -f drivers/kernelsu/feature/uts_spoof.c ]; then
-            echo "Checking whether find_kernel_symbol_exact() has a real implementation..."
+            echo "Checking whether find_kernel_symbol_exact() has a real .c implementation..."
 
             FIND_KERNEL_SYMBOL_EXACT_IMPL="$(
-              grep -RnsE '^[[:space:]]*(void|int|unsigned long|uintptr_t|void[[:space:]]*\*)[[:space:]]+find_kernel_symbol_exact[[:space:]]*\(' \
+              grep -RnsE '^[[:space:]]*(void|int|long|unsigned long|uintptr_t|void[[:space:]]*\*)[[:space:]]+find_kernel_symbol_exact[[:space:]]*\([^;]*\)[[:space:]]*\{' \
                 drivers/kernelsu \
-                --include='*.c' \
-                --include='*.h' 2>/dev/null \
+                --include='*.c' 2>/dev/null \
               | grep -v 'drivers/kernelsu/feature/uts_spoof.c' \
               | head -n 1 || true
             )"
 
             if [ -z "$FIND_KERNEL_SYMBOL_EXACT_IMPL" ]; then
-              echo "Disabling uts_spoof backend because find_kernel_symbol_exact() implementation is missing"
+              echo "Disabling uts_spoof backend because find_kernel_symbol_exact() has no real .c implementation"
+
+              if grep -Rns 'find_kernel_symbol_exact' drivers/kernelsu --include='*.c' --include='*.h' 2>/dev/null; then
+                echo "ℹ️ References/prototypes exist, but no linked implementation was found"
+              fi
 
               if [ -f drivers/kernelsu/feature/Makefile ]; then
                 sed -i '/uts_spoof\.o/d' drivers/kernelsu/feature/Makefile
@@ -1472,8 +1472,13 @@ runs:
                 > drivers/kernelsu/feature/uts_spoof.c
 
               echo "✅ uts_spoof fallback stub installed"
+
+              if grep -Rns 'find_kernel_symbol_exact' drivers/kernelsu/feature/uts_spoof.c 2>/dev/null; then
+                echo "::error::uts_spoof.c still references find_kernel_symbol_exact after stubbing"
+                exit 1
+              fi
             else
-              echo "✅ find_kernel_symbol_exact() implementation found:"
+              echo "✅ find_kernel_symbol_exact() real implementation found:"
               echo "   $FIND_KERNEL_SYMBOL_EXACT_IMPL"
               echo "Keeping uts_spoof.c"
             fi
