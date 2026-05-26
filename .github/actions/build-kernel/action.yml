@@ -1365,49 +1365,52 @@ runs:
                 drivers/kernelsu/core/init.c
             fi
 
-            if ! grep -Rqs 'void[[:space:]]\+ksu_lsm_hook_init' \
-              drivers/kernelsu \
-              --include='*.c' \
-              --include='*.h' 2>/dev/null; then
-              sed -i '/ksu_lsm_hook_init\s*();/d' drivers/kernelsu/core/init.c
-              echo "  - Removed orphan ksu_lsm_hook_init() call"
-            fi
+            # SukiSU Ultra does not reliably provide this SUSFS-injected init call.
+            # Remove it unconditionally to avoid implicit declaration and orphan symbol errors.
+            sed -i '/ksu_lsm_hook_init\s*();/d' drivers/kernelsu/core/init.c
+            echo "  - Removed ksu_lsm_hook_init() call from init.c"
 
-            if ! grep -Rqs 'void[[:space:]]\+ksu_init_symbol_resolver' \
+            # Remove symbol resolver init if the resolver backend does not exist.
+            if ! grep -Rqs '^[[:space:]]*\(void\|int\)[[:space:]]\+ksu_init_symbol_resolver[[:space:]]*(' \
               drivers/kernelsu \
-              --include='*.c' \
-              --include='*.h' 2>/dev/null; then
+              --include='*.c' 2>/dev/null; then
               sed -i '/ksu_init_symbol_resolver\s*();/d' drivers/kernelsu/core/init.c
               echo "  - Removed orphan ksu_init_symbol_resolver() call"
             fi
 
+            # Normalize possible SUSFS syscall hook names.
             sed -i \
               -e 's/\bksu_syscall_hook_manager_init\s*(/ksu_syscall_hook_init(/g' \
               -e 's/\bksu_syscall_hook_manager_exit\s*(/ksu_syscall_hook_exit(/g' \
               drivers/kernelsu/core/init.c
 
-            if ! grep -Rqs 'void[[:space:]]\+ksu_syscall_hook_init' \
+            # Remove syscall hook calls if no real C implementation exists.
+            if ! grep -Rqs '^[[:space:]]*\(void\|int\)[[:space:]]\+ksu_syscall_hook_init[[:space:]]*(' \
               drivers/kernelsu \
-              --include='*.c' \
-              --include='*.h' 2>/dev/null; then
+              --include='*.c' 2>/dev/null; then
               sed -i '/ksu_syscall_hook_init\s*();/d' drivers/kernelsu/core/init.c
               echo "  - Removed orphan ksu_syscall_hook_init() calls"
             fi
 
-            if ! grep -Rqs 'void[[:space:]]\+ksu_syscall_hook_exit' \
+            if ! grep -Rqs '^[[:space:]]*\(void\|int\)[[:space:]]\+ksu_syscall_hook_exit[[:space:]]*(' \
               drivers/kernelsu \
-              --include='*.c' \
-              --include='*.h' 2>/dev/null; then
+              --include='*.c' 2>/dev/null; then
               sed -i '/ksu_syscall_hook_exit\s*();/d' drivers/kernelsu/core/init.c
               echo "  - Removed orphan ksu_syscall_hook_exit() calls"
             fi
 
+            # ksu_late_loaded may not exist in SukiSU Ultra.
             sed -i \
               -e 's/if *(ksu_late_loaded) *{/if (0) {/' \
               -e 's/if *(!ksu_late_loaded)/if (1)/' \
               drivers/kernelsu/core/init.c
 
             rm -f drivers/kernelsu/core/init.c.rej
+
+            if grep -n 'ksu_lsm_hook_init\s*();' drivers/kernelsu/core/init.c 2>/dev/null; then
+              echo "::error::ksu_lsm_hook_init() still exists in drivers/kernelsu/core/init.c"
+              exit 1
+            fi
 
             echo "✅ SukiSU Ultra init/link symbol compatibility fix applied"
           fi
