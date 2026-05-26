@@ -1415,18 +1415,22 @@ runs:
             echo "✅ SukiSU Ultra init/link symbol compatibility fix applied"
           fi
 
-          # Disable or stub uts_spoof when resolver backend is unavailable
+          # Disable or stub uts_spoof when resolver backend is unavailable.
+          # Do not count uts_spoof.c itself as the backend just because it references find_kernel_symbol_exact().
           if [ -f drivers/kernelsu/feature/uts_spoof.c ]; then
-            if ! grep -Rqs 'find_kernel_symbol_exact' \
-              drivers/kernelsu/core \
-              drivers/kernelsu/include \
-              drivers/kernelsu/hook \
-              drivers/kernelsu/infra \
-              drivers/kernelsu/runtime \
-              --include='*.c' \
-              --include='*.h' 2>/dev/null; then
+            echo "Checking whether find_kernel_symbol_exact() has a real implementation..."
 
-              echo "Disabling uts_spoof backend because find_kernel_symbol_exact() is missing"
+            FIND_KERNEL_SYMBOL_EXACT_IMPL="$(
+              grep -RnsE '^[[:space:]]*(void|int|unsigned long|uintptr_t|void[[:space:]]*\*)[[:space:]]+find_kernel_symbol_exact[[:space:]]*\(' \
+                drivers/kernelsu \
+                --include='*.c' \
+                --include='*.h' 2>/dev/null \
+              | grep -v 'drivers/kernelsu/feature/uts_spoof.c' \
+              | head -n 1 || true
+            )"
+
+            if [ -z "$FIND_KERNEL_SYMBOL_EXACT_IMPL" ]; then
+              echo "Disabling uts_spoof backend because find_kernel_symbol_exact() implementation is missing"
 
               if [ -f drivers/kernelsu/feature/Makefile ]; then
                 sed -i '/uts_spoof\.o/d' drivers/kernelsu/feature/Makefile
@@ -1439,6 +1443,8 @@ runs:
               if [ -f drivers/kernelsu/Kbuild ]; then
                 sed -i '/uts_spoof\.o/d' drivers/kernelsu/Kbuild
               fi
+
+              sed -i '/CONFIG_KSU_SUSFS_SPOOF_UNAME/d' "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" 2>/dev/null || true
 
               printf '%s\n' \
                 '#include <linux/types.h>' \
@@ -1453,11 +1459,23 @@ runs:
                 '{' \
                 '        return 0;' \
                 '}' \
+                '' \
+                'int ksu_spoof_version(const char *release, const char *version)' \
+                '{' \
+                '        return 0;' \
+                '}' \
+                '' \
+                'int ksu_set_spoof_version(const char __user *release, const char __user *version)' \
+                '{' \
+                '        return 0;' \
+                '}' \
                 > drivers/kernelsu/feature/uts_spoof.c
 
               echo "✅ uts_spoof fallback stub installed"
             else
-              echo "✅ find_kernel_symbol_exact() backend found, keeping uts_spoof.c"
+              echo "✅ find_kernel_symbol_exact() implementation found:"
+              echo "   $FIND_KERNEL_SYMBOL_EXACT_IMPL"
+              echo "Keeping uts_spoof.c"
             fi
           fi
 
@@ -1663,7 +1681,7 @@ runs:
         CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
         CONFIG_KSU_SUSFS_TRY_UMOUNT=y
         CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
-        CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+        CONFIG_KSU_SUSFS_SPOOF_UNAME=n
         CONFIG_KSU_SUSFS_ENABLE_LOG=y
         CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
         CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
