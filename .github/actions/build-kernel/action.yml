@@ -1365,11 +1365,9 @@ runs:
                 drivers/kernelsu/core/init.c
             fi
 
-            # SukiSU Ultra does not reliably provide this SUSFS-injected init call.
             sed -i '/ksu_lsm_hook_init\s*();/d' drivers/kernelsu/core/init.c
             echo "  - Removed ksu_lsm_hook_init() call from init.c"
 
-            # Remove symbol resolver init if the resolver backend does not exist as compiled code.
             if ! grep -Rqs '^[[:space:]]*\(void\|int\)[[:space:]]\+ksu_init_symbol_resolver[[:space:]]*(' \
               drivers/kernelsu \
               --include='*.c' 2>/dev/null; then
@@ -1377,13 +1375,11 @@ runs:
               echo "  - Removed orphan ksu_init_symbol_resolver() call"
             fi
 
-            # Normalize possible SUSFS syscall hook names.
             sed -i \
               -e 's/\bksu_syscall_hook_manager_init\s*(/ksu_syscall_hook_init(/g' \
               -e 's/\bksu_syscall_hook_manager_exit\s*(/ksu_syscall_hook_exit(/g' \
               drivers/kernelsu/core/init.c
 
-            # Remove syscall hook calls if no real C implementation exists.
             if ! grep -Rqs '^[[:space:]]*\(void\|int\)[[:space:]]\+ksu_syscall_hook_init[[:space:]]*(' \
               drivers/kernelsu \
               --include='*.c' 2>/dev/null; then
@@ -1398,7 +1394,6 @@ runs:
               echo "  - Removed orphan ksu_syscall_hook_exit() calls"
             fi
 
-            # ksu_late_loaded may not exist in SukiSU Ultra.
             sed -i \
               -e 's/if *(ksu_late_loaded) *{/if (0) {/' \
               -e 's/if *(!ksu_late_loaded)/if (1)/' \
@@ -1415,10 +1410,6 @@ runs:
           fi
 
           # Disable or stub uts_spoof when resolver backend is unavailable.
-          # Important:
-          # - Header prototypes are not enough.
-          # - uts_spoof.c itself must not count as the resolver backend.
-          # - If uts_spoof.o is removed from Kbuild, fallback symbols must be injected into a file that is always compiled.
           if [ -f drivers/kernelsu/feature/uts_spoof.c ]; then
             echo "Checking whether find_kernel_symbol_exact() has a linked implementation..."
 
@@ -1453,11 +1444,8 @@ runs:
                 echo "ℹ️ References/prototypes may exist, but resolver is not safely linked for this build"
               fi
 
-              # Disable SUSFS uname spoof config so Kbuild will not select the real backend.
               sed -i '/CONFIG_KSU_SUSFS_SPOOF_UNAME/d' "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" 2>/dev/null || true
 
-              # Remove uts_spoof.o from build files where present.
-              # Since uts_spoof.o may no longer compile, fallback symbols are injected into core/init.c below.
               if [ -f drivers/kernelsu/feature/Makefile ]; then
                 sed -i '/uts_spoof\.o/d' drivers/kernelsu/feature/Makefile
               fi
@@ -1470,7 +1458,6 @@ runs:
                 sed -i '/uts_spoof\.o/d' drivers/kernelsu/Kbuild
               fi
 
-              # Replace uts_spoof.c with no-op fallback as an extra safety layer.
               printf '%s\n' \
                 '#include <linux/types.h>' \
                 '#include <linux/uaccess.h>' \
@@ -1496,40 +1483,52 @@ runs:
                 '}' \
                 > drivers/kernelsu/feature/uts_spoof.c
 
-              # Critical fallback:
-              # dispatch.c and init.c may still reference ksu_spoof_version / ksu_set_spoof_version.
-              # If uts_spoof.o is not built, define these symbols in core/init.c, which is always compiled.
               if [ -f drivers/kernelsu/core/init.c ]; then
                 if ! grep -q 'SUKISU_UTS_SPOOF_FALLBACK_SYMBOLS' drivers/kernelsu/core/init.c; then
-                  cat >> drivers/kernelsu/core/init.c <<'EOF'
+                  {
+                    printf '%s\n' ''
+                    printf '%s\n' '/* SUKISU_UTS_SPOOF_FALLBACK_SYMBOLS'
+                    printf '%s\n' ' * Fallback for SUSFS/SukiSU trees where uts_spoof backend is disabled'
+                    printf '%s\n' ' * because find_kernel_symbol_exact() is not safely linked.'
+                    printf '%s\n' ' */'
+                    printf '%s\n' '#ifndef __user'
+                    printf '%s\n' '#define __user'
+                    printf '%s\n' '#endif'
+                    printf '%s\n' ''
+                    printf '%s\n' '__attribute__((weak)) int ksu_spoof_version(const char *release, const char *version)'
+                    printf '%s\n' '{'
+                    printf '%s\n' '        return 0;'
+                    printf '%s\n' '}'
+                    printf '%s\n' ''
+                    printf '%s\n' '__attribute__((weak)) int ksu_set_spoof_version(const char __user *release, const char __user *version)'
+                    printf '%s\n' '{'
+                    printf '%s\n' '        return 0;'
+                    printf '%s\n' '}'
+                    printf '%s\n' ''
+                    printf '%s\n' '__attribute__((weak)) int ksu_spoof_uname(const char *release, const char *version)'
+                    printf '%s\n' '{'
+                    printf '%s\n' '        return 0;'
+                    printf '%s\n' '}'
+                    printf '%s\n' ''
+                    printf '%s\n' '__attribute__((weak)) int ksu_handle_set_uname(const char __user *release, const char __user *version)'
+                    printf '%s\n' '{'
+                    printf '%s\n' '        return 0;'
+                    printf '%s\n' '}'
+                  } >> drivers/kernelsu/core/init.c
 
-                  /* SUKISU_UTS_SPOOF_FALLBACK_SYMBOLS
-                   * Fallback for SUSFS/SukiSU trees where uts_spoof backend is disabled
-                   * because find_kernel_symbol_exact() is not safely linked.
-                   */
-                  __attribute__((weak)) int ksu_spoof_version(const char *release, const char *version)
-                  {
-                          return 0;
-                  }
-                  
-                  __attribute__((weak)) int ksu_set_spoof_version(const char __user *release, const char __user *version)
-                  {
-                          return 0;
-                  }
-                  
-                  __attribute__((weak)) int ksu_spoof_uname(const char *release, const char *version)
-                  {
-                          return 0;
-                  }
-                  
-                  __attribute__((weak)) int ksu_handle_set_uname(const char __user *release, const char __user *version)
-                  {
-                          return 0;
-                  }
-                  EOF
                   echo "✅ Injected uts_spoof fallback symbols into core/init.c"
                 else
                   echo "ℹ️ uts_spoof fallback symbols already present in core/init.c"
+                fi
+
+                if ! grep -q 'ksu_spoof_version' drivers/kernelsu/core/init.c; then
+                  echo "::error::Failed to inject ksu_spoof_version fallback into core/init.c"
+                  exit 1
+                fi
+
+                if ! grep -q 'ksu_set_spoof_version' drivers/kernelsu/core/init.c; then
+                  echo "::error::Failed to inject ksu_set_spoof_version fallback into core/init.c"
+                  exit 1
                 fi
               fi
 
