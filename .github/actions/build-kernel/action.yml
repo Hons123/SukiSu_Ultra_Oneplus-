@@ -1202,136 +1202,98 @@ runs:
 
         echo "SusFS Version: $susfs_version"
 
-        version_lte() {
-          [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$1" ]
-        }
-
-        if version_lte "${susfs_version:1}" "1.5.12"; then
-          echo "NEED_HOOKS=true" >> "$GITHUB_ENV"
-        else
-          echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
+        if [ "$susfs_version" != "v2.1.0" ]; then
+          echo "::error::This workflow step now supports SUSFS v2.1.0 only. Detected: $susfs_version"
+          exit 1
         fi
 
-        case "$susfs_version" in
-          "v1.5.8")
-            if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-              patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_apk_sign.c.patch"
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_core_hook.c.patch"
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_selinux.c.patch"
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_ksud.c.patch"
-            elif [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
-              echo "ReSukiSU works with built-in SUSFS integration"
-            elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-              cd "$KSU_FOLDER"
-              patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-            else
-              cd "$KSU_FOLDER"
-              patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-            fi
-            ;;
+        echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
 
-          "v1.5.9"|"v1.5.10"|"v1.5.11"|"v1.5.12")
-            if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-              cd "$KSUN_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+        # ------------------------------------------------------------------
+        # Apply SUSFS integration patch to KernelSU / SukiSU source tree
+        # ------------------------------------------------------------------
 
-              for file in $(find ./kernel -maxdepth 2 -name "*.rej" -printf "%f\n" | cut -d'.' -f1); do
-                echo "Patching file: $file.c with fix_$file.c.patch"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.c.patch"
-              done
+        case "${{ inputs.ksu_type }}" in
+          "KSUN")
+            cd "$KSUN_FOLDER"
 
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_kernel_compat.c.patch"
-            elif [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
-              echo "ReSukiSU works with built-in SUSFS integration"
-            elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-            else
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-            fi
-            ;;
+            echo "Applying SUSFS v2.1.0 integration patch for KernelSU Next..."
 
-          "v2.0.0")
-            if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-              cd "$KSUN_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+            patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
 
-              for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
-                echo "Patching file: $file with fix_$file.patch"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.patch"
-              done
+            for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
+              echo "Patching file: $file with fix_$file.patch"
+              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.patch"
+            done
 
-              echo "Patching Hook Mode!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
+            echo "Patching Hook Mode!"
+            patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
 
-              echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
+            echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
+            patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
 
+            if [ "$KSUVER" -le 33095 ]; then
               echo "Patching Multi-manager Support for SusFS kernel!"
               patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_manager.patch"
+            fi
 
-              if [ "$KSUVER" -ge 33068 ] && [ "$KSUVER" -lt 33070 ]; then
-                echo "Patching Multi-manager sepolicy Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_sepolicy_fix.patch"
-              fi
-            elif [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
-              echo "ReSukiSU works with built-in SUSFS integration"
-            elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-            else
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+            if [ "$KSUVER" -ge 33068 ] && [ "$KSUVER" -lt 33070 ]; then
+              echo "Patching Multi-manager sepolicy Support for SusFS kernel!"
+              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_sepolicy_fix.patch"
             fi
             ;;
 
-          "v2.1.0")
-            if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-              cd "$KSUN_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+          "SUKISU")
+            cd "$KSU_FOLDER"
 
-              for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
-                echo "Patching file: $file with fix_$file.patch"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.patch"
-              done
+            echo "Applying SUSFS v2.1.0 integration patch for SukiSU Ultra..."
 
-              echo "Patching Hook Mode!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
+            patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
 
-              echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
+            echo "Checking leftover SukiSU KernelSU-side reject files..."
 
-              if [ "$KSUVER" -le 33095 ]; then
-                echo "Patching Multi-manager Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_manager.patch"
-              fi
+            if [ -n "$(find . -name '*.rej' -print -quit)" ]; then
+              echo "Found KernelSU-side .rej files; dumping known SukiSU/SUSFS rejects:"
+              find . -name '*.rej' -exec echo "=== {} ===" \; -exec cat {} \; || true
 
-              if [ "$KSUVER" -ge 33068 ] && [ "$KSUVER" -lt 33070 ]; then
-                echo "Patching Multi-manager sepolicy Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_sepolicy_fix.patch"
-              fi
-            elif [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
-              echo "ReSukiSU works with built-in SUSFS integration"
-            elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-            else
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+              rm -f kernel/core/init.c.rej
+              rm -f kernel/feature/selinux_hide.c.rej
+              rm -f kernel/runtime/boot_event.c.rej
             fi
+
+            if [ -n "$(find . -name '*.rej' -print -quit)" ]; then
+              echo "::error::Unexpected KernelSU-side .rej files remain:"
+              find . -name '*.rej' -print
+              exit 1
+            fi
+
+            echo "✅ SukiSU Ultra SUSFS integration patch handled"
+            ;;
+
+          "RSKSU")
+            echo "ReSukiSU works with built-in SUSFS integration"
+            ;;
+
+          "KSU")
+            cd "$KSU_FOLDER"
+
+            echo "Applying SUSFS v2.1.0 integration patch for KernelSU..."
+
+            patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
             ;;
 
           *)
-            echo "::error::Unsupported SUSFS version: $susfs_version"
+            echo "::error::Unsupported ksu_type: ${{ inputs.ksu_type }}"
             exit 1
             ;;
         esac
 
         cd "$COMMON_KERNEL_FOLDER"
 
-        # ===== KSUN / SukiSU Ultra compatibility fixes =====
+        # ------------------------------------------------------------------
+        # KSUN / SukiSU Ultra compatibility fixes
+        # ------------------------------------------------------------------
+
         if [ "${{ inputs.ksu_type }}" = "KSUN" ] || [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
           echo "Applying KSUN / SukiSU compatibility fixes..."
 
@@ -1367,7 +1329,10 @@ runs:
           if [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
             echo "Applying SukiSU Ultra-specific fixes..."
 
-            # Fix SukiSU Ultra init.c symbols left by SUSFS v2.1.0 integration patch
+            # --------------------------------------------------------------
+            # Fix SukiSU Ultra core/init.c symbols left by SUSFS integration
+            # --------------------------------------------------------------
+
             if [ -f drivers/kernelsu/core/init.c ]; then
               echo "Applying SukiSU Ultra core/init.c legacy symbol cleanup..."
 
@@ -1412,6 +1377,59 @@ runs:
               echo "✅ SukiSU Ultra core/init.c legacy symbol cleanup applied"
             fi
 
+            # --------------------------------------------------------------
+            # Fix SukiSU Ultra runtime/boot_event.c input hook mismatch
+            # --------------------------------------------------------------
+
+            if [ -f drivers/kernelsu/runtime/boot_event.c ]; then
+              echo "Applying SukiSU Ultra runtime/boot_event.c input hook cleanup..."
+
+              python3 - <<'PY'
+                from pathlib import Path
+                
+                p = Path("drivers/kernelsu/runtime/boot_event.c")
+                s = p.read_text()
+                
+                old = "    ksu_stop_input_hook_runtime();"
+                new = """    if (static_key_enabled(&ksu_is_input_hook_enabled)) {
+                        static_branch_disable(&ksu_is_input_hook_enabled);
+                        pr_info("ksu_input_hook is disabled\\n");
+                    }"""
+                
+                if old in s:
+                s = s.replace(old, new)
+                p.write_text(s)
+                print("✅ Replaced ksu_stop_input_hook_runtime() with static key disable block")
+            elif "ksu_stop_input_hook_runtime" in s:
+                print("⚠️ Found ksu_stop_input_hook_runtime with unexpected formatting")
+            else:
+                print("ℹ️ ksu_stop_input_hook_runtime() not found; boot_event.c likely already compatible")
+            PY
+
+              grep -q '#include <linux/jump_label.h>' drivers/kernelsu/runtime/boot_event.c || \
+                sed -i '1i#include <linux/jump_label.h>' drivers/kernelsu/runtime/boot_event.c
+
+              if grep -q 'ksu_is_input_hook_enabled' drivers/kernelsu/runtime/boot_event.c && \
+                 ! grep -q 'extern struct static_key_true ksu_is_input_hook_enabled' drivers/kernelsu/runtime/boot_event.c && \
+                 ! grep -q 'extern struct static_key_false ksu_is_input_hook_enabled' drivers/kernelsu/runtime/boot_event.c; then
+                sed -i '/#include <linux\/jump_label.h>/a extern struct static_key_true ksu_is_input_hook_enabled;' \
+                  drivers/kernelsu/runtime/boot_event.c
+              fi
+
+              echo "Verifying SukiSU Ultra runtime/boot_event.c cleanup..."
+
+              if grep -n 'ksu_stop_input_hook_runtime' drivers/kernelsu/runtime/boot_event.c; then
+                echo "::error::ksu_stop_input_hook_runtime still remains in drivers/kernelsu/runtime/boot_event.c"
+                exit 1
+              fi
+
+              echo "✅ SukiSU Ultra runtime/boot_event.c input hook cleanup applied"
+            fi
+
+            # --------------------------------------------------------------
+            # Copy SukiSU helper headers / uapi
+            # --------------------------------------------------------------
+
             mkdir -p drivers/kernelsu/kpm/uapi include/uapi
 
             cp "$KERNEL_PLATFORM_FOLDER/KernelSU/uapi/"*.h \
@@ -1435,7 +1453,10 @@ runs:
               done
             fi
 
-            # Fix SukiSU Ultra selinux_hide.c missing backup_sepolicy declaration
+            # --------------------------------------------------------------
+            # Fix SukiSU Ultra selinux_hide.c backup_sepolicy declaration
+            # --------------------------------------------------------------
+
             if [ -f drivers/kernelsu/feature/selinux_hide.c ]; then
               echo "Applying SukiSU Ultra selinux_hide backup_sepolicy fix..."
 
@@ -1473,6 +1494,10 @@ runs:
                 echo "ℹ️ backup_sepolicy declaration already present or not needed"
               fi
             fi
+
+            # --------------------------------------------------------------
+            # Kbuild include fixes
+            # --------------------------------------------------------------
 
             if [ -f drivers/kernelsu/Kbuild ]; then
               grep -q 'srctree)/$(src)' drivers/kernelsu/Kbuild || \
@@ -1534,7 +1559,10 @@ runs:
             fi
           fi
         fi
-        # ===== End KSUN / SukiSU Ultra compatibility fixes =====
+
+        # ------------------------------------------------------------------
+        # Kernel-side SUSFS patch
+        # ------------------------------------------------------------------
 
         if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
           if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
@@ -1663,6 +1691,10 @@ runs:
         fi
 
         echo "✅ SUSFS patches applied"
+
+        # ------------------------------------------------------------------
+        # SUSFS configuration
+        # ------------------------------------------------------------------
 
         echo "Add SUSFS Configuration Settings"
 
