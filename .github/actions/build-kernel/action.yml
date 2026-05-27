@@ -1184,6 +1184,11 @@ runs:
     - name: Apply SUSFS Patches
       shell: bash
       if: ${{ env.OP_SUSFS == 'true' }}
+      env:
+        KSU_TYPE: ${{ inputs.ksu_type }}
+        ANDROID_VER_LOCAL: ${{ env.ANDROID_VER }}
+        KERNEL_VER_LOCAL: ${{ env.KERNEL_VER }}
+        SUSFS_KERNEL_BRANCH_LOCAL: ${{ env.SUSFS_KERNEL_BRANCH }}
       run: |
         set -euo pipefail
         echo "::group::Apply SUSFS patches"
@@ -1213,7 +1218,7 @@ runs:
         # Apply SUSFS integration patch to KernelSU / SukiSU source tree
         # ------------------------------------------------------------------
 
-        case "${{ inputs.ksu_type }}" in
+        case "$KSU_TYPE" in
           "KSUN")
             cd "$KSUN_FOLDER"
 
@@ -1283,7 +1288,7 @@ runs:
             ;;
 
           *)
-            echo "::error::Unsupported ksu_type: ${{ inputs.ksu_type }}"
+            echo "::error::Unsupported ksu_type: $KSU_TYPE"
             exit 1
             ;;
         esac
@@ -1294,7 +1299,7 @@ runs:
         # KSUN / SukiSU Ultra compatibility fixes
         # ------------------------------------------------------------------
 
-        if [ "${{ inputs.ksu_type }}" = "KSUN" ] || [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
+        if [ "$KSU_TYPE" = "KSUN" ] || [ "$KSU_TYPE" = "SUKISU" ]; then
           echo "Applying KSUN / SukiSU compatibility fixes..."
 
           sed -i '/DEFINE_MEMBER(netlink_kernel_cfg, cb_mutex)/d' \
@@ -1326,7 +1331,7 @@ runs:
               drivers/kernelsu/core/init.c 2>/dev/null || true
           fi
 
-          if [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
+          if [ "$KSU_TYPE" = "SUKISU" ]; then
             echo "Applying SukiSU Ultra-specific fixes..."
 
             # --------------------------------------------------------------
@@ -1384,27 +1389,30 @@ runs:
             if [ -f drivers/kernelsu/runtime/boot_event.c ]; then
               echo "Applying SukiSU Ultra runtime/boot_event.c input hook cleanup..."
 
-              python3 - <<'PY'
-                from pathlib import Path
-                
-                p = Path("drivers/kernelsu/runtime/boot_event.c")
-                s = p.read_text()
-                
-                old = "    ksu_stop_input_hook_runtime();"
-                new = """    if (static_key_enabled(&ksu_is_input_hook_enabled)) {
-                        static_branch_disable(&ksu_is_input_hook_enabled);
-                        pr_info("ksu_input_hook is disabled\\n");
-                    }"""
-                
-                if old in s:
-                s = s.replace(old, new)
-                p.write_text(s)
-                print("✅ Replaced ksu_stop_input_hook_runtime() with static key disable block")
-            elif "ksu_stop_input_hook_runtime" in s:
-                print("⚠️ Found ksu_stop_input_hook_runtime with unexpected formatting")
-            else:
-                print("ℹ️ ksu_stop_input_hook_runtime() not found; boot_event.c likely already compatible")
-            PY
+              if grep -q 'ksu_stop_input_hook_runtime[[:space:]]*();' drivers/kernelsu/runtime/boot_event.c; then
+                awk '
+                  {
+                    if ($0 ~ /^[[:space:]]*ksu_stop_input_hook_runtime[[:space:]]*\(\);/) {
+                      indent = $0
+                      sub(/ksu_stop_input_hook_runtime.*/, "", indent)
+
+                      print indent "if (static_key_enabled(&ksu_is_input_hook_enabled)) {"
+                      print indent "    static_branch_disable(&ksu_is_input_hook_enabled);"
+                      print indent "    pr_info(\"ksu_input_hook is disabled\\n\");"
+                      print indent "}"
+                      next
+                    }
+
+                    print
+                  }
+                ' drivers/kernelsu/runtime/boot_event.c > drivers/kernelsu/runtime/boot_event.c.tmp
+
+                mv drivers/kernelsu/runtime/boot_event.c.tmp drivers/kernelsu/runtime/boot_event.c
+
+                echo "✅ Replaced ksu_stop_input_hook_runtime() with static key disable block"
+              else
+                echo "ℹ️ ksu_stop_input_hook_runtime() not found; boot_event.c likely already compatible"
+              fi
 
               grep -q '#include <linux/jump_label.h>' drivers/kernelsu/runtime/boot_event.c || \
                 sed -i '1i#include <linux/jump_label.h>' drivers/kernelsu/runtime/boot_event.c
@@ -1561,18 +1569,18 @@ runs:
         fi
 
         # ------------------------------------------------------------------
-        # Kernel-side SUSFS patch
+        # Kernel-side SUSFS patch compatibility pre-fixes
         # ------------------------------------------------------------------
 
-        if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
+        if [ "$ANDROID_VER_LOCAL" = "android15" ] && [ "$KERNEL_VER_LOCAL" = "6.6" ]; then
           if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
-            sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c
+            sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace/hooks/fs.h>' ./fs/namespace.c
           fi
         fi
 
         fake_patched=0
 
-        if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
+        if [ "$ANDROID_VER_LOCAL" = "android15" ] && [ "$KERNEL_VER_LOCAL" = "6.6" ]; then
           if ! grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
             echo "nr_subpages Line not found. Fake Patching!"
             sed -i -e '/int ret = 0, copied = 0;/a \\tunsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;' -e '/int ret = 0, copied = 0;/a \\tpagemap_entry_t \*res = NULL;' ./fs/proc/task_mmu.c
@@ -1585,21 +1593,21 @@ runs:
           fi
         fi
 
-        if [ "${{ env.ANDROID_VER }}" = "android12" ] && [ "${{ env.KERNEL_VER }}" = "5.10" ]; then
+        if [ "$ANDROID_VER_LOCAL" = "android12" ] && [ "$KERNEL_VER_LOCAL" = "5.10" ]; then
           if ! grep -qxF $'\tif (!vma_pages(vma))' ./fs/proc/task_mmu.c; then
             echo "vma_pages Line not found. Fake Patching!"
             fake_patched=1
           fi
         fi
 
-        if [ "${{ env.ANDROID_VER }}" = "android13" ] && [ "${{ env.KERNEL_VER }}" = "5.15" ]; then
+        if [ "$ANDROID_VER_LOCAL" = "android13" ] && [ "$KERNEL_VER_LOCAL" = "5.15" ]; then
           if ! grep -qxF $'\tif (!vma_pages(vma))' ./fs/proc/task_mmu.c; then
             echo "vma_pages Line not found. Fake Patching!"
             fake_patched=1
           fi
         fi
 
-        if [ "${{ env.ANDROID_VER }}" = "android14" ] && [ "${{ env.KERNEL_VER }}" = "6.1" ]; then
+        if [ "$ANDROID_VER_LOCAL" = "android14" ] && [ "$KERNEL_VER_LOCAL" = "6.1" ]; then
           if ! grep -qxF $'\tif (!vma_pages(vma))' ./fs/proc/task_mmu.c; then
             echo "vma_pages Line not found. Fake Patching!"
             fake_patched=1
@@ -1611,9 +1619,13 @@ runs:
           fi
         fi
 
+        # ------------------------------------------------------------------
+        # Apply kernel-side SUSFS patch
+        # ------------------------------------------------------------------
+
         echo "Applying SUSFS kernel patch..."
 
-        SUSFS_PATCH="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        SUSFS_PATCH="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${SUSFS_KERNEL_BRANCH_LOCAL}.patch"
 
         if [ ! -f "$SUSFS_PATCH" ]; then
           echo "::error::SUSFS patch not found: $SUSFS_PATCH"
@@ -1660,29 +1672,33 @@ runs:
           fi
         fi
 
+        # ------------------------------------------------------------------
+        # Revert fake patching if it was only used to satisfy context
+        # ------------------------------------------------------------------
+
         if [ "$fake_patched" = 1 ]; then
-          if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
+          if [ "$ANDROID_VER_LOCAL" = "android15" ] && [ "$KERNEL_VER_LOCAL" = "6.6" ]; then
             if grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
               echo "nr_subpages Line found. Revert Fake Patching!"
               sed -i -e '/unsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;/d' -e '/pagemap_entry_t \*res = NULL;/d' ./fs/proc/task_mmu.c
             fi
           fi
 
-          if [ "${{ env.ANDROID_VER }}" = "android12" ] && [ "${{ env.KERNEL_VER }}" = "5.10" ]; then
+          if [ "$ANDROID_VER_LOCAL" = "android12" ] && [ "$KERNEL_VER_LOCAL" = "5.10" ]; then
             if grep -qxF $'\t\t\tgoto show_pad;' ./fs/proc/task_mmu.c; then
               echo "vma_pages Line found. Revert Fake Patching!"
               sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
             fi
           fi
 
-          if [ "${{ env.ANDROID_VER }}" = "android13" ] && [ "${{ env.KERNEL_VER }}" = "5.15" ]; then
+          if [ "$ANDROID_VER_LOCAL" = "android13" ] && [ "$KERNEL_VER_LOCAL" = "5.15" ]; then
             if grep -qxF $'\t\t\tgoto show_pad;' ./fs/proc/task_mmu.c; then
               echo "vma_pages Line found. Revert Fake Patching!"
               sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
             fi
           fi
 
-          if [ "${{ env.ANDROID_VER }}" = "android14" ] && [ "${{ env.KERNEL_VER }}" = "6.1" ]; then
+          if [ "$ANDROID_VER_LOCAL" = "android14" ] && [ "$KERNEL_VER_LOCAL" = "6.1" ]; then
             if grep -qxF $'\t\t\tgoto show_pad;' ./fs/proc/task_mmu.c; then
               echo "vma_pages Line found. Revert Fake Patching!"
               sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
