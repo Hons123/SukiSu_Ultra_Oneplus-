@@ -1326,6 +1326,25 @@ runs:
             's/^static bool ksu_selinux_hide_running/bool ksu_selinux_hide_running/' \
             "$target" || true
 
+          # --------------------------------------------------------------
+          # 5.10 + LTO compatibility:
+          #
+          # Some older GKI 5.10 trees produce an LTO-time fake_state
+          # undefined-symbol error if fake_state remains static/local while
+          # generated cloned functions reference it.
+          #
+          # Convert fake_state definitions to link-visible definitions.
+          # --------------------------------------------------------------
+
+          perl -0pi -e 's/^[ \t]*static[ \t]+(const[ \t]+)?struct[ \t]+selinux_state[ \t]+fake_state([ \t]*[=;])/${1}struct selinux_state fake_state$2/mg' "$target" || true
+          perl -0pi -e 's/^[ \t]*static[ \t]+(const[ \t]+)?struct[ \t]+selinux_state[ \t]+\*fake_state([ \t]*[=;])/${1}struct selinux_state *fake_state$2/mg' "$target" || true
+
+          # If a declaration became "const struct..." above, keep it writable.
+          sed -i \
+            -e 's/^[[:space:]]*const[[:space:]]\+struct[[:space:]]\+selinux_state[[:space:]]\+fake_state/struct selinux_state fake_state/' \
+            -e 's/^[[:space:]]*const[[:space:]]\+struct[[:space:]]\+selinux_state[[:space:]]\+\*fake_state/struct selinux_state *fake_state/' \
+            "$target" || true
+
           if grep -q "backup_sepolicy" "$target" && \
              ! grep -q "struct selinux_policy \*backup_sepolicy" "$target"; then
             awk '
@@ -1443,7 +1462,6 @@ runs:
 
           # --------------------------------------------------------------
           # Remove remaining ksu_spoof_version(...) callers from init.c.
-          # This fixes undefined symbol: ksu_spoof_version.
           # --------------------------------------------------------------
 
           for target in \
@@ -1465,7 +1483,6 @@ runs:
 
           # --------------------------------------------------------------
           # Neutralize ksu_set_spoof_version(...) callers.
-          # This fixes undefined symbol: ksu_set_spoof_version.
           # --------------------------------------------------------------
 
           for target in \
@@ -1488,14 +1505,12 @@ runs:
           # --------------------------------------------------------------
           # Neutralize direct ksu_patch_text() calls in selinux_hide.c only.
           #
-          # Handles both forms:
+          # Handles:
           #   ret = ksu_patch_text(...);
           #   ksu_patch_text(...);
           #
-          # Do not remove valid declarations/definitions from:
-          # - hook/patch_memory.h
-          # - hook/arm64/patch_memory.c
-          # - hook/x86_64/patch_memory.c
+          # Also removes stale local variables left behind after direct
+          # runtime patching is disabled.
           # --------------------------------------------------------------
 
           for target in \
@@ -1514,12 +1529,52 @@ runs:
               # Extra fallback for one-line standalone calls.
               sed -i '/^[[:space:]]*ksu_patch_text[[:space:]]*(.*);[[:space:]]*$/d' "$target" || true
 
+              # Remove stale local variables left behind after removing
+              # ksu_patch_text() calls. These are safe to remove because the
+              # patch call that consumed them is gone.
+              perl -0pi -e 's/^[ \t]*[A-Za-z_][A-Za-z0-9_]*_fn[ \t]+new_fn[ \t]*=[ \t]*my_[A-Za-z_][A-Za-z0-9_]*[ \t]*;[ \t]*\n//mg' "$target"
+              perl -0pi -e 's/^[ \t]*sel_open_handle_status_fn[ \t]+new_fn[ \t]*=[ \t]*my_sel_open_handle_status[ \t]*;[ \t]*\n//mg' "$target"
+              sed -i '/new_fn[[:space:]]*=[[:space:]]*my_sel_open_handle_status/d' "$target" || true
+
+              # Some variants leave new_policy/new_state helpers unused too.
+              sed -i '/^[[:space:]]*struct[[:space:]]\+selinux_policy[[:space:]]\+\*new_policy[[:space:]]*=/d' "$target" || true
+              sed -i '/^[[:space:]]*struct[[:space:]]\+selinux_state[[:space:]]\+\*new_state[[:space:]]*=/d' "$target" || true
+
               if grep -nE 'ksu_patch_text[[:space:]]*\(' "$target"; then
                 echo "::error::ksu_patch_text call still remains in $target"
                 exit 1
               fi
 
-              echo "✅ Neutralized ksu_patch_text calls in $target"
+              if grep -nE 'new_fn[[:space:]]*=[[:space:]]*my_sel_open_handle_status' "$target"; then
+                echo "::error::Unused new_fn still remains in $target"
+                exit 1
+              fi
+
+              echo "✅ Neutralized ksu_patch_text calls and stale locals in $target"
+            fi
+          done
+
+          # --------------------------------------------------------------
+          # 5.10 + LTO fake_state compatibility in selinux_hide.c.
+          #
+          # Run this here too, because this function is called after the
+          # KernelSU tree has been copied into common/drivers/kernelsu.
+          # --------------------------------------------------------------
+
+          for target in \
+            "$KSU_FOLDER/kernel/feature/selinux_hide.c" \
+            "$COMMON_KERNEL_FOLDER/drivers/kernelsu/feature/selinux_hide.c"; do
+
+            if [ -f "$target" ]; then
+              perl -0pi -e 's/^[ \t]*static[ \t]+(const[ \t]+)?struct[ \t]+selinux_state[ \t]+fake_state([ \t]*[=;])/${1}struct selinux_state fake_state$2/mg' "$target" || true
+              perl -0pi -e 's/^[ \t]*static[ \t]+(const[ \t]+)?struct[ \t]+selinux_state[ \t]+\*fake_state([ \t]*[=;])/${1}struct selinux_state *fake_state$2/mg' "$target" || true
+
+              sed -i \
+                -e 's/^[[:space:]]*const[[:space:]]\+struct[[:space:]]\+selinux_state[[:space:]]\+fake_state/struct selinux_state fake_state/' \
+                -e 's/^[[:space:]]*const[[:space:]]\+struct[[:space:]]\+selinux_state[[:space:]]\+\*fake_state/struct selinux_state *fake_state/' \
+                "$target" || true
+
+              echo "✅ Applied fake_state LTO compatibility fix in $target"
             fi
           done
 
@@ -1961,6 +2016,11 @@ runs:
           if [ -f drivers/kernelsu/feature/selinux_hide.c ]; then
             if grep -nE 'ksu_late_loaded|ksu_patch_text[[:space:]]*\(' drivers/kernelsu/feature/selinux_hide.c; then
               echo "::error::Unsupported SukiSU/SUSFS call still exists in drivers/kernelsu/feature/selinux_hide.c"
+              exit 1
+            fi
+
+            if grep -nE 'new_fn[[:space:]]*=[[:space:]]*my_sel_open_handle_status' drivers/kernelsu/feature/selinux_hide.c; then
+              echo "::error::Unused new_fn still exists in drivers/kernelsu/feature/selinux_hide.c"
               exit 1
             fi
           fi
