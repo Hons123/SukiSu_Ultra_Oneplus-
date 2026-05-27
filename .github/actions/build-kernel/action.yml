@@ -1373,6 +1373,92 @@ runs:
           echo "✅ Fixed $target"
         }
 
+        fix_sukisu_linker_symbols() {
+          echo "Applying SukiSU linker-symbol compatibility cleanup..."
+
+          # --------------------------------------------------------------
+          # Remove ksu_init_symbol_resolver() calls from init.c
+          # --------------------------------------------------------------
+
+          for target in \
+            "$KSU_FOLDER/kernel/core/init.c" \
+            "$COMMON_KERNEL_FOLDER/drivers/kernelsu/core/init.c"; do
+
+            if [ -f "$target" ]; then
+              sed -i '/ksu_init_symbol_resolver\s*();/d' "$target" || true
+
+              if grep -n 'ksu_init_symbol_resolver' "$target"; then
+                echo "::error::ksu_init_symbol_resolver still remains in $target"
+                exit 1
+              fi
+
+              echo "✅ Removed ksu_init_symbol_resolver from $target"
+            fi
+          done
+
+          # --------------------------------------------------------------
+          # Disable uts_spoof object.
+          #
+          # CONFIG_KSU_SUSFS_SPOOF_UNAME=n is already set, but some
+          # SukiSU/SUSFS Kbuild combinations still compile uts_spoof.o.
+          # That causes unresolved find_kernel_symbol_exact.
+          # --------------------------------------------------------------
+
+          for kbuild in \
+            "$KSU_FOLDER/kernel/Makefile" \
+            "$KSU_FOLDER/kernel/Kbuild" \
+            "$COMMON_KERNEL_FOLDER/drivers/kernelsu/Makefile" \
+            "$COMMON_KERNEL_FOLDER/drivers/kernelsu/Kbuild"; do
+
+            if [ -f "$kbuild" ]; then
+              sed -i \
+                -e '/uts_spoof\.o/d' \
+                -e '/feature\/uts_spoof\.o/d' \
+                "$kbuild" || true
+
+              echo "✅ Removed uts_spoof.o from $kbuild"
+            fi
+          done
+
+          # --------------------------------------------------------------
+          # Neutralize ksu_patch_text() in selinux_hide.c.
+          #
+          # Your SukiSU tree does not provide ksu_patch_text, so leave the
+          # rest of selinux_hide intact but remove the missing call.
+          # --------------------------------------------------------------
+
+          for target in \
+            "$KSU_FOLDER/kernel/feature/selinux_hide.c" \
+            "$COMMON_KERNEL_FOLDER/drivers/kernelsu/feature/selinux_hide.c"; do
+
+            if [ -f "$target" ]; then
+              perl -0pi -e 's/\bret\s*=\s*ksu_patch_text\s*\([^;]*\);/ret = 0;/g' "$target"
+
+              if grep -n 'ksu_patch_text' "$target"; then
+                echo "::error::ksu_patch_text still remains in $target"
+                exit 1
+              fi
+
+              echo "✅ Neutralized ksu_patch_text references in $target"
+            fi
+          done
+
+          # --------------------------------------------------------------
+          # Final verification
+          # --------------------------------------------------------------
+
+          if [ -d "$COMMON_KERNEL_FOLDER/drivers/kernelsu" ]; then
+            if grep -RnsE 'find_kernel_symbol_exact|ksu_patch_text|ksu_init_symbol_resolver' \
+              "$COMMON_KERNEL_FOLDER/drivers/kernelsu" \
+              --include='*.c' --include='*.h' 2>/dev/null; then
+              echo "::error::Unsupported SukiSU/SUSFS linker symbols still remain"
+              exit 1
+            fi
+          fi
+
+          echo "✅ SukiSU linker-symbol compatibility cleanup completed"
+        }
+
         # ------------------------------------------------------------------
         # Apply SUSFS integration patch to KernelSU / SukiSU source tree
         # ------------------------------------------------------------------
@@ -1445,6 +1531,7 @@ runs:
             fix_sukisu_init_c "kernel/core/init.c"
             fix_sukisu_boot_event_c "kernel/runtime/boot_event.c"
             fix_sukisu_selinux_hide_c "kernel/feature/selinux_hide.c"
+            fix_sukisu_linker_symbols
 
             echo "✅ SukiSU Ultra SUSFS integration patch handled"
             ;;
@@ -1511,6 +1598,7 @@ runs:
             fix_sukisu_init_c "drivers/kernelsu/core/init.c"
             fix_sukisu_boot_event_c "drivers/kernelsu/runtime/boot_event.c"
             fix_sukisu_selinux_hide_c "drivers/kernelsu/feature/selinux_hide.c"
+            fix_sukisu_linker_symbols
 
             # --------------------------------------------------------------
             # Copy SukiSU helper headers / uapi
@@ -1750,19 +1838,25 @@ runs:
 
         echo "✅ SUSFS patches applied"
 
+        if [ "$KSU_TYPE" = "SUKISU" ]; then
+          fix_sukisu_linker_symbols
+        fi
+
         # ------------------------------------------------------------------
         # Final SukiSU safety sweep before config
         # ------------------------------------------------------------------
 
         if [ "$KSU_TYPE" = "SUKISU" ]; then
-          echo "Running final SukiSU safety sweep for ksu_late_loaded..."
+          echo "Running final SukiSU safety sweep for unsupported linker symbols..."
 
-          if grep -Rns 'ksu_late_loaded' drivers/kernelsu --include='*.c' --include='*.h' 2>/dev/null; then
-            echo "::error::ksu_late_loaded still exists after cleanup"
+          if grep -RnsE 'ksu_late_loaded|find_kernel_symbol_exact|ksu_patch_text|ksu_init_symbol_resolver' \
+            drivers/kernelsu \
+            --include='*.c' --include='*.h' 2>/dev/null; then
+            echo "::error::Unsupported SukiSU/SUSFS symbols still exist after cleanup"
             exit 1
           fi
 
-          echo "✅ No ksu_late_loaded references remain in drivers/kernelsu"
+          echo "✅ No unsupported SukiSU/SUSFS symbols remain in drivers/kernelsu"
         fi
 
         # ------------------------------------------------------------------
@@ -1792,7 +1886,6 @@ runs:
         EOF
 
         echo "::endgroup::"
-
 
     - name: Add BBG
       if: ${{ env.OP_BBG == 'true' }}
